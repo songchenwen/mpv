@@ -93,7 +93,7 @@ struct priv {
     int opt_device_id;
     int opt_list;
     int opt_exclusive;
-    int opt_bit_perfect;
+    int opt_change_physical_format;
 };
 
 static int get_ring_size(struct ao *ao)
@@ -398,7 +398,7 @@ static bool ca_change_formats(struct ao *ao, AudioStreamID stream,
     ca_print_asbd(ao, "setting virtual stream format:", &asbd);
     ca_change_format_sync(ao, stream, asbd, CA_VFMT);
 
-    if (p->opt_bit_perfect) {
+    if (p->opt_change_physical_format) {
         ca_print_asbd(ao, "setting physical stream format:", &asbd);
         changed_pfmt = ca_change_format(ao, stream, asbd, CA_PFMT);
     } else {
@@ -448,7 +448,7 @@ static int init_exclusive(struct ao *ao, AudioStreamBasicDescription asbd)
         AudioStreamRangedDescription *formats;
         size_t n_formats;
 
-        if (p->opt_bit_perfect)
+        if (p->opt_change_physical_format)
             err = CA_GET_ARY(streams[i], CA_PFMTS, &formats, &n_formats);
         else
             err = CA_GET_ARY(streams[i], CA_VFMTS, &formats, &n_formats);
@@ -662,7 +662,7 @@ const struct ao_driver audio_out_coreaudio = {
         OPT_INT("device_id", opt_device_id, 0, OPTDEF_INT(-1)),
         OPT_FLAG("list", opt_list, 0),
         OPT_FLAG("exclusive", opt_exclusive, 0),
-        OPT_FLAG("bit_perfect", opt_bit_perfect, 0),
+        OPT_FLAG("change_physical_format", opt_change_physical_format, 0),
         {0}
     },
 };
