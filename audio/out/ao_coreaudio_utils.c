@@ -116,7 +116,7 @@ static OSStatus print_formats(AudioStreamID stream, int stream_id,
         talloc_free(repr);
     }
 
-    // talloc_free(formats);
+    talloc_free(formats);
     return noErr;
 }
 
