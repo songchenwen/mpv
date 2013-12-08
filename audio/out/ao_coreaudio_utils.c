@@ -233,65 +233,6 @@ int ca_make_mp_format(AudioStreamBasicDescription asbd)
     return format;
 }
 
-bool ca_format_is_compressed(AudioStreamBasicDescription asbd)
-{
-    switch (asbd.mFormatID)
-    case 'IAC3':
-    case 'iac3':
-    case  kAudioFormat60958AC3:
-    case  kAudioFormatAC3:
-        return true;
-    return false;
-}
-
-bool ca_stream_supports_digital(struct ao *ao, AudioStreamID stream)
-{
-    AudioStreamRangedDescription *formats = NULL;
-    size_t n_formats;
-
-    OSStatus err =
-        CA_GET_ARY(stream, kAudioStreamPropertyAvailablePhysicalFormats,
-                   &formats, &n_formats);
-
-    CHECK_CA_ERROR("Could not get number of stream formats.");
-
-    for (int i = 0; i < n_formats; i++) {
-        AudioStreamBasicDescription asbd = formats[i].mFormat;
-        ca_print_asbd(ao, "supported format:", &(asbd));
-        if (ca_format_is_compressed(asbd)) {
-            talloc_free(formats);
-            return true;
-        }
-    }
-
-    talloc_free(formats);
-coreaudio_error:
-    return false;
-}
-
-bool ca_device_supports_digital(struct ao *ao, AudioDeviceID device)
-{
-    AudioStreamID *streams = NULL;
-    size_t n_streams;
-
-    /* Retrieve all the output streams. */
-    OSStatus err =
-        CA_GET_ARY_O(device, kAudioDevicePropertyStreams, &streams, &n_streams);
-
-    CHECK_CA_ERROR("could not get number of streams.");
-
-    for (int i = 0; i < n_streams; i++) {
-        if (ca_stream_supports_digital(ao, streams[i])) {
-            talloc_free(streams);
-            return true;
-        }
-    }
-
-    talloc_free(streams);
-
-coreaudio_error:
-    return false;
-}
 static bool ca_match_fflags(int target, int matchee){
     int flags[4] = {
         kAudioFormatFlagIsFloat,

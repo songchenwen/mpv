@@ -59,9 +59,6 @@ void ca_print_device_list(struct ao *ao);
 
 AudioStreamBasicDescription ca_make_asbd(int mp_format, int rate, int channels);
 int ca_make_mp_format(AudioStreamBasicDescription asbd);
-bool ca_format_is_compressed(AudioStreamBasicDescription asbd);
-bool ca_stream_supports_digital(struct ao *ao, AudioStreamID stream);
-bool ca_device_supports_digital(struct ao *ao, AudioDeviceID device);
 
 bool ca_asbd_matches(AudioStreamBasicDescription target,
                      AudioStreamBasicDescription matchee);
