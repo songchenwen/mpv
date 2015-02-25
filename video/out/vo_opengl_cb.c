@@ -334,7 +334,7 @@ int mpv_opengl_cb_render(struct mpv_opengl_cb_context *ctx, int fbo, int vp[4])
     pthread_mutex_unlock(&ctx->lock);
 
     if (mpi)
-        gl_video_upload_image(ctx->renderer, mpi);
+        gl_video_upload_image(ctx->renderer, mpi, NULL);
 
     gl_video_render_frame(ctx->renderer, fbo, NULL);
 

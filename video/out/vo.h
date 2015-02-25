@@ -209,6 +209,7 @@ struct vo_driver {
      * information
      */
     void (*draw_image_timed)(struct vo *vo, struct mp_image *mpi,
+                             struct mp_image *mpi2,
                              struct frame_timing *t);
 
     /*
@@ -302,7 +303,7 @@ int vo_reconfig(struct vo *vo, struct mp_image_params *p, int flags);
 
 int vo_control(struct vo *vo, uint32_t request, void *data);
 bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts);
-void vo_queue_frame(struct vo *vo, struct mp_image *image,
+void vo_queue_frame(struct vo *vo, struct mp_image *image, struct mp_image *image2,
                     int64_t pts_us, int64_t duration);
 void vo_wait_frame(struct vo *vo);
 bool vo_still_displaying(struct vo *vo);

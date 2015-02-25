@@ -845,7 +845,8 @@ void write_video(struct MPContext *mpctx, double endpts)
     update_osd_msg(mpctx);
     update_subtitles(mpctx);
 
-    vo_queue_frame(vo, mpctx->next_frame[0], pts, duration);
+    struct mp_image *next = mp_image_new_ref(mpctx->next_frame[1]);
+    vo_queue_frame(vo, mpctx->next_frame[0], next, pts, duration);
     mpctx->next_frame[0] = NULL;
 
     mpctx->shown_vframes++;

@@ -137,11 +137,13 @@ struct vo_internal {
     bool dropped_frame;             // the previous frame was dropped
 
     struct mp_image *current_frame; // last frame queued to the VO
+    struct mp_image *current_frame2;
 
     int64_t wakeup_pts;             // time at which to pull frame from decoder
 
     bool rendering;                 // true if an image is being rendered
     struct mp_image *frame_queued;  // the image that should be rendered
+    struct mp_image *frame_queued2;
     int64_t frame_pts;              // realtime of intended display
     int64_t frame_duration;         // realtime frame duration (for framedrop)
 
@@ -353,6 +355,7 @@ static void run_reconfig(void *p)
 
     pthread_mutex_lock(&in->lock);
     mp_image_unrefp(&in->current_frame);
+    mp_image_unrefp(&in->current_frame2);
     forget_frames(vo);
     pthread_mutex_unlock(&in->lock);
 
@@ -395,6 +398,7 @@ static void forget_frames(struct vo *vo)
     in->hasframe_rendered = false;
     in->drop_count = 0;
     mp_image_unrefp(&in->frame_queued);
+    mp_image_unrefp(&in->frame_queued2);
     // don't unref current_frame; we always want to be able to redraw it
 }
 
@@ -507,7 +511,7 @@ bool vo_is_ready_for_frame(struct vo *vo, int64_t next_pts)
 // Direct the VO thread to put the currently queued image on the screen.
 // vo_is_ready_for_frame() must have returned true before this call.
 // Ownership of the image is handed to the vo.
-void vo_queue_frame(struct vo *vo, struct mp_image *image,
+void vo_queue_frame(struct vo *vo, struct mp_image *image, struct mp_image *image2,
                     int64_t pts_us, int64_t duration)
 {
     struct vo_internal *in = vo->in;
@@ -515,6 +519,7 @@ void vo_queue_frame(struct vo *vo, struct mp_image *image,
     assert(vo->config_ok && !in->frame_queued);
     in->hasframe = true;
     in->frame_queued = image;
+    in->frame_queued2 = image2;
     in->frame_pts = pts_us;
     in->frame_duration = duration;
     in->wakeup_pts = in->vsync_timed ? 0 : in->frame_pts + MPMAX(duration, 0);
@@ -562,10 +567,15 @@ static bool render_frame(struct vo *vo)
     if (in->vsync_timed && !in->hasframe)
         goto nothing_done;
 
-    if (img)
+    if (img) {
         mp_image_setrefp(&in->current_frame, img);
+        // unlike img, is not unrefed below
+        talloc_free(in->current_frame2);
+        in->current_frame2 = in->frame_queued2;
+    }
 
     in->frame_queued = NULL;
+    in->frame_queued2 = NULL;
 
     // The next time a flip (probably) happens.
     int64_t prev_vsync = prev_sync(vo, mp_time_us());
@@ -619,7 +629,7 @@ static bool render_frame(struct vo *vo)
                 .next_vsync = next_vsync,
                 .prev_vsync = prev_vsync,
             };
-            vo->driver->draw_image_timed(vo, img, &t);
+            vo->driver->draw_image_timed(vo, img, in->current_frame2, &t);
         } else {
             vo->driver->draw_image(vo, img);
         }

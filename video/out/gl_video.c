@@ -2043,7 +2043,7 @@ static bool get_image(struct gl_video *p, struct mp_image *mpi)
     return true;
 }
 
-void gl_video_upload_image(struct gl_video *p, struct mp_image *mpi)
+void gl_video_upload_image(struct gl_video *p, struct mp_image *mpi, struct mp_image *mpi_next)
 {
     GL *gl = p->gl;
 

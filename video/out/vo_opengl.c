@@ -157,6 +157,7 @@ static void flip_page(struct vo *vo)
 }
 
 static void draw_image_timed(struct vo *vo, mp_image_t *mpi,
+                             struct mp_image *mpi2,
                              struct frame_timing *t)
 {
     struct gl_priv *p = vo->priv;
@@ -168,7 +169,7 @@ static void draw_image_timed(struct vo *vo, mp_image_t *mpi,
     mpgl_lock(p->glctx);
 
     if (mpi)
-        gl_video_upload_image(p->renderer, mpi);
+        gl_video_upload_image(p->renderer, mpi, mpi2);
     gl_video_render_frame(p->renderer, 0, t);
 
     // The playloop calls this last before waiting some time until it decides
@@ -184,7 +185,7 @@ static void draw_image_timed(struct vo *vo, mp_image_t *mpi,
 
 static void draw_image(struct vo *vo, mp_image_t *mpi)
 {
-    draw_image_timed(vo, mpi, NULL);
+    draw_image_timed(vo, mpi, NULL, NULL);
 }
 
 static int query_format(struct vo *vo, int format)
