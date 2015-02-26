@@ -169,7 +169,15 @@ static void draw_image_timed(struct vo *vo, mp_image_t *mpi,
     mpgl_lock(p->glctx);
 
     if (mpi)
-        gl_video_upload_image(p->renderer, mpi, mpi2);
+        gl_video_upload_image(p->renderer, mpi);
+    else if (mpi2) {
+        // We don't have a real PTS for the mpi2 frame, so we make up
+        // something random as an estimate for where the frame would
+        // approximately be
+        t->pts += t->frame_dur;
+        gl_video_upload_image(p->renderer, talloc_memdup(p, mpi2, sizeof(struct mp_image)));
+    }
+
     gl_video_render_frame(p->renderer, 0, t);
 
     // The playloop calls this last before waiting some time until it decides

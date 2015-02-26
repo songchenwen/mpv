@@ -1786,7 +1786,7 @@ static double gl_video_interpolate_frame(struct gl_video *p,
         }
     }
 
-    if (t && prev_pts < t->pts) {
+    if (t && abs(prev_pts - t->pts) > 100) {
         MP_STATS(p, "new-pts");
         gl_video_upscale_frame(p, chain, &p->surfaces[p->surface_idx].fbotex);
         p->surfaces[p->surface_idx].valid = true;
@@ -2043,7 +2043,7 @@ static bool get_image(struct gl_video *p, struct mp_image *mpi)
     return true;
 }
 
-void gl_video_upload_image(struct gl_video *p, struct mp_image *mpi, struct mp_image *mpi_next)
+void gl_video_upload_image(struct gl_video *p, struct mp_image *mpi)
 {
     GL *gl = p->gl;
 
@@ -2052,6 +2052,8 @@ void gl_video_upload_image(struct gl_video *p, struct mp_image *mpi, struct mp_i
     p->osd_pts = mpi->pts;
 
     talloc_free(vimg->mpi);
+    if (vimg->mpi == mpi)
+        return;
     vimg->mpi = mpi;
 
     if (p->hwdec_active)

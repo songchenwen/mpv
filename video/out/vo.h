@@ -156,6 +156,7 @@ struct frame_timing {
     int64_t pts;
     int64_t next_vsync;
     int64_t prev_vsync;
+    int64_t frame_dur;
 };
 
 struct vo_driver {
