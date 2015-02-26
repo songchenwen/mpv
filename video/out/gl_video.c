@@ -1768,33 +1768,76 @@ static void gl_video_upscale_frame(struct gl_video *p, struct pass *chain, struc
         handle_pass(p, chain, inter_fbo, p->inter_program);
 }
 
-static double gl_video_interpolate_frame(struct gl_video *p,
+static void gl_video_interpolate_frame(struct gl_video *p,
                                        struct pass *chain,
-                                       struct frame_timing *t)
+                                       struct frame_timing *t,
+                                       struct fbotex *screen)
 {
     GL *gl = p->gl;
     double inter_coeff = 0.0;
     int64_t prev_pts = p->surfaces[fbosurface_next(p)].pts;
+    struct fbotex frame_fbo = chain->f;
+    bool frame_needed = true;
 
-    // Make sure all surfaces are actually valid, and redraw them manually
-    // if this is not the case
-    for (int i = 0; i < FBOSURFACES_MAX; i++) {
-        if (!p->surfaces[i].valid) {
-            struct pass frame = { .f = chain->f };
-            gl_video_upscale_frame(p, &frame, &p->surfaces[i].fbotex);
-            p->surfaces[i].valid = true;
+    if (!t) {
+        p->is_interpolated = false;
+        inter_coeff = 0.0;
+    } else {
+        int64_t vsync_interval = t->next_vsync - t->prev_vsync;
+
+        if (t->pts > t->next_vsync && t->pts < t->next_vsync + vsync_interval) {
+            // current frame overlaps PTS boundary, blend
+            double R = t->pts - t->next_vsync;
+            float ts = p->opts.smoothmotion_threshold;
+            inter_coeff = R / vsync_interval;
+            inter_coeff = inter_coeff < 0.0 + ts ? 0.0 : inter_coeff;
+            inter_coeff = inter_coeff > 1.0 - ts ? 1.0 : inter_coeff;
+            MP_DBG(p, "inter frame ppts: %lld, pts: %lld, "
+                   "vsync: %lld, mix: %f\n",
+                   (long long)prev_pts, (long long)t->pts,
+                   (long long)t->next_vsync, inter_coeff);
+            MP_STATS(p, "frame-mix");
+
+            // the value is scaled to fit in the graph with the completely
+            // unrelated "phase" value (which is stupid)
+            MP_STATS(p, "value-timed %lld %f mix-value",
+                     (long long)t->pts, inter_coeff * 10000);
+        } else if (t->pts > t->next_vsync) {
+            // there's a new frame, but we haven't displayed or blended it yet,
+            // so we still draw the old frame
+            inter_coeff = 1.0;
+            frame_needed = false;
         }
     }
 
-    if (t && abs(prev_pts - t->pts) > 100) {
-        MP_STATS(p, "new-pts");
+    p->is_interpolated = inter_coeff > 0.0;
+    bool new_pts = t && abs(prev_pts - t->pts) > 100;
+
+    // new frame needed right away, so we draw it first
+    if (new_pts && frame_needed) {
+        printf("frame needed, drawing immediately\n");
         gl_video_upscale_frame(p, chain, &p->surfaces[p->surface_idx].fbotex);
         p->surfaces[p->surface_idx].valid = true;
-        p->surfaces[p->surface_idx].pts = t->pts;
-        p->surface_idx = fbosurface_next(p);
     } else {
         // re-use the previously rendered surface as source
         chain->f = p->surfaces[fbosurface_next(p)].fbotex;
+    }
+
+    if (new_pts) {
+        // new PTS arrived, swap the surfaces so that tex0 is always the latest
+        MP_STATS(p, "new-pts");
+        p->surfaces[p->surface_idx].pts = t->pts;
+        p->surface_idx = fbosurface_next(p);
+    }
+
+    // make sure all surfaces are actually valid, and redraw them manually
+    // if this is not the case
+    for (int i = 0; i < FBOSURFACES_MAX; i++) {
+        if (!p->surfaces[i].valid) {
+            struct pass frame = { .f = frame_fbo };
+            gl_video_upscale_frame(p, &frame, &p->surfaces[i].fbotex);
+            p->surfaces[i].valid = true;
+        }
     }
 
     // fbosurface 0 is bound by handle_pass
@@ -1802,38 +1845,27 @@ static double gl_video_interpolate_frame(struct gl_video *p,
     gl->BindTexture(p->gl_target, p->surfaces[p->surface_idx].fbotex.texture);
     gl->ActiveTexture(GL_TEXTURE0);
 
-    if (!t) {
-        p->is_interpolated = false;
-        return 0.0;
+    // actually draw the output to the screen
+    chain->use_dst = true;
+    chain->dst = p->dst_rect;
+    chain->flags = (p->image_params.rotate % 90 ? 0 : p->image_params.rotate / 90)
+                 | (p->image.image_flipped ? 4 : 0);
+
+    gl->UseProgram(p->final_program);
+    GLint loc = gl->GetUniformLocation(p->final_program, "inter_coeff");
+    gl->Uniform1f(loc, inter_coeff);
+    handle_pass(p, chain, screen, p->final_program);
+
+    // new frame arrived but wasn't needed right away, upscale it afterwards
+    if (new_pts && !frame_needed) {
+        // restore original frame textures/chain so we can pretend we're
+        // on a fresh slate
+        GLuint imgtex[4] = {0};
+        set_image_textures(p, &p->image, imgtex);
+        struct pass frame = { .f = frame_fbo };
+        gl_video_upscale_frame(p, &frame, &p->surfaces[fbosurface_next(p)].fbotex);
+        //printf("drawing afterwards\n");
     }
-
-    int64_t vsync_interval = t->next_vsync - t->prev_vsync;
-
-    if (t->pts > t->next_vsync && t->pts < t->next_vsync + vsync_interval) {
-        // current frame overlaps PTS boundary, blend
-        double R = t->pts - t->next_vsync;
-        float ts = p->opts.smoothmotion_threshold;
-        inter_coeff = R / vsync_interval;
-        inter_coeff = inter_coeff < 0.0 + ts ? 0.0 : inter_coeff;
-        inter_coeff = inter_coeff > 1.0 - ts ? 1.0 : inter_coeff;
-        MP_DBG(p, "inter frame ppts: %lld, pts: %lld, "
-               "vsync: %lld, mix: %f\n",
-               (long long)prev_pts, (long long)t->pts,
-               (long long)t->next_vsync, inter_coeff);
-        MP_STATS(p, "frame-mix");
-
-        // the value is scaled to fit in the graph with the completely
-        // unrelated "phase" value (which is stupid)
-        MP_STATS(p, "value-timed %lld %f mix-value",
-                 (long long)t->pts, inter_coeff * 10000);
-    } else if (t->pts > t->next_vsync) {
-        // there's a new frame, but we haven't displayed or blended it yet,
-        // so we still draw the old frame
-        inter_coeff = 1.0;
-    }
-
-    p->is_interpolated = inter_coeff > 0.0;
-    return inter_coeff;
 }
 
 // (fbo==0 makes BindFramebuffer select the screen backbuffer)
@@ -1875,13 +1907,6 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
         },
     };
 
-    double inter_coeff = 0.0;
-    if (p->opts.smoothmotion) {
-        inter_coeff = gl_video_interpolate_frame(p, &chain, t);
-    } else {
-        gl_video_upscale_frame(p, &chain, NULL);
-    }
-
     struct fbotex screen = {
         .vp_x = p->vp_x,
         .vp_y = p->vp_y,
@@ -1890,15 +1915,19 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
         .fbo = fbo,
     };
 
-    chain.use_dst = true;
-    chain.dst = p->dst_rect;
-    chain.flags = (p->image_params.rotate % 90 ? 0 : p->image_params.rotate / 90)
-                | (vimg->image_flipped ? 4 : 0);
+    if (p->opts.smoothmotion) {
+        gl_video_interpolate_frame(p, &chain, t, &screen);
+    } else {
+        gl_video_upscale_frame(p, &chain, NULL);
 
-    gl->UseProgram(p->final_program);
-    GLint loc = gl->GetUniformLocation(p->final_program, "inter_coeff");
-    gl->Uniform1f(loc, inter_coeff);
-    handle_pass(p, &chain, &screen, p->final_program);
+        chain.use_dst = true;
+        chain.dst = p->dst_rect;
+        chain.flags = (p->image_params.rotate % 90 ? 0 : p->image_params.rotate / 90)
+                    | (vimg->image_flipped ? 4 : 0);
+
+        gl->UseProgram(p->final_program);
+        handle_pass(p, &chain, &screen, p->final_program);
+    }
 
     gl->UseProgram(0);
 
@@ -2052,9 +2081,12 @@ void gl_video_upload_image(struct gl_video *p, struct mp_image *mpi)
     p->osd_pts = mpi->pts;
 
     talloc_free(vimg->mpi);
-    if (vimg->mpi == mpi)
+    if (vimg->mpi && vimg->mpi->pts == mpi->pts) {
+        vimg->mpi = mpi;
         return;
-    vimg->mpi = mpi;
+    } else {
+        vimg->mpi = mpi;
+    }
 
     if (p->hwdec_active)
         return;

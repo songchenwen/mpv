@@ -168,14 +168,16 @@ static void draw_image_timed(struct vo *vo, mp_image_t *mpi,
 
     mpgl_lock(p->glctx);
 
-    if (mpi)
-        gl_video_upload_image(p->renderer, mpi);
-    else if (mpi2) {
+    //printf("draw_image_timed mpi=%f mpi2=%f\n", mpi ? mpi->pts : -1, mpi2 ? mpi2->pts : -1);
+
+    if (mpi2) {
         // We don't have a real PTS for the mpi2 frame, so we make up
         // something random as an estimate for where the frame would
         // approximately be
         t->pts += t->frame_dur;
-        gl_video_upload_image(p->renderer, talloc_memdup(p, mpi2, sizeof(struct mp_image)));
+        gl_video_upload_image(p->renderer, mp_image_new_ref(mpi2));
+    } else if (mpi) {
+        gl_video_upload_image(p->renderer, mpi);
     }
 
     gl_video_render_frame(p->renderer, 0, t);
