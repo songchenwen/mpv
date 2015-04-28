@@ -167,21 +167,22 @@ bool check_ca_st(struct ao *ao, int level, OSStatus code, const char *message)
     return false;
 }
 
-void ca_fill_asbd(struct ao *ao, AudioStreamBasicDescription *asbd)
+static void ca_fill_asbd_raw(AudioStreamBasicDescription *asbd, int mp_format,
+                             int samplerate, int num_channels)
 {
-    asbd->mSampleRate       = ao->samplerate;
+    asbd->mSampleRate       = samplerate;
     // Set "AC3" for other spdif formats too - unknown if that works.
-    asbd->mFormatID         = AF_FORMAT_IS_IEC61937(ao->format) ?
+    asbd->mFormatID         = AF_FORMAT_IS_IEC61937(mp_format) ?
                               kAudioFormat60958AC3 :
                               kAudioFormatLinearPCM;
-    asbd->mChannelsPerFrame = ao->channels.num;
-    asbd->mBitsPerChannel   = af_fmt2bits(ao->format);
+    asbd->mChannelsPerFrame = num_channels;
+    asbd->mBitsPerChannel   = af_fmt2bits(mp_format);
     asbd->mFormatFlags      = kAudioFormatFlagIsPacked;
 
-    if ((ao->format & AF_FORMAT_TYPE_MASK) == AF_FORMAT_F)
+    if ((mp_format & AF_FORMAT_TYPE_MASK) == AF_FORMAT_F)
         asbd->mFormatFlags |= kAudioFormatFlagIsFloat;
 
-    if ((ao->format & AF_FORMAT_SIGN_MASK) == AF_FORMAT_SI)
+    if ((mp_format & AF_FORMAT_SIGN_MASK) == AF_FORMAT_SI)
         asbd->mFormatFlags |= kAudioFormatFlagIsSignedInteger;
 
     if (BYTE_ORDER == BIG_ENDIAN)
@@ -191,6 +192,46 @@ void ca_fill_asbd(struct ao *ao, AudioStreamBasicDescription *asbd)
     asbd->mBytesPerPacket = asbd->mBytesPerFrame =
         asbd->mFramesPerPacket * asbd->mChannelsPerFrame *
         (asbd->mBitsPerChannel / 8);
+}
+
+void ca_fill_asbd(struct ao *ao, AudioStreamBasicDescription *asbd)
+{
+    ca_fill_asbd_raw(asbd, ao->format, ao->samplerate, ao->channels.num);
+}
+
+static bool ca_format_is_digital(AudioStreamBasicDescription *asbd)
+{
+    switch (asbd->mFormatID)
+    case 'IAC3':
+    case 'iac3':
+    case  kAudioFormat60958AC3:
+    case  kAudioFormatAC3:
+        return true;
+    return false;
+}
+
+// Return the AF_FORMAT_* (AF_FORMAT_S16 etc.) corresponding to the asbd.
+int ca_asbd_to_mp_format(AudioStreamBasicDescription *asbd)
+{
+    for (int n = 0; af_fmtstr_table[n].format; n++) {
+        int mp_format = af_fmtstr_table[n].format;
+        AudioStreamBasicDescription mp_asbd = {0};
+        ca_fill_asbd_raw(&mp_asbd, mp_format, 0, asbd->mChannelsPerFrame);
+
+        uint32_t formatID = asbd->mFormatID;
+        if (ca_format_is_digital(asbd))
+            formatID = kAudioFormat60958AC3;
+
+        int flags = kAudioFormatFlagIsPacked | kAudioFormatFlagIsFloat |
+                kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsBigEndian;
+
+        if ((asbd->mFormatFlags & flags) == mp_asbd.mFormatFlags &&
+            asbd->mBitsPerChannel == mp_asbd.mBitsPerChannel &&
+            formatID == mp_asbd.mFormatID &&
+            asbd->mBytesPerPacket == mp_asbd.mBytesPerPacket)
+            return mp_format;
+    }
+    return 0;
 }
 
 void ca_print_asbd(struct ao *ao, const char *description,
@@ -215,6 +256,40 @@ void ca_print_asbd(struct ao *ao, const char *description,
        (flags & kAudioFormatFlagIsNonInterleaved) ? " P" : "");
 
     talloc_free(format);
+}
+
+// Return whether new is an improvement over old (req is the requested format).
+bool ca_asbd_is_better(AudioStreamBasicDescription *req,
+                       AudioStreamBasicDescription *old,
+                       AudioStreamBasicDescription *new)
+{
+    if (req->mFormatID != new->mFormatID)
+        return false;
+
+    int mpfmt_req = ca_asbd_to_mp_format(old);
+    int mpfmt_new = ca_asbd_to_mp_format(new);
+    if (!mpfmt_new)
+        return false;
+
+    if (mpfmt_req != mpfmt_new) {
+        int mpfmt_old = ca_asbd_to_mp_format(old);
+        if (af_format_conversion_score(mpfmt_req, mpfmt_old) >
+            af_format_conversion_score(mpfmt_req, mpfmt_new))
+            return false;
+    }
+
+    if (req->mSampleRate != new->mSampleRate) {
+        if (old->mSampleRate > new->mSampleRate)
+            return false;
+    }
+
+    if (req->mChannelsPerFrame != new->mChannelsPerFrame) {
+        if (old->mChannelsPerFrame > new->mChannelsPerFrame ||
+            new->mChannelsPerFrame > MP_NUM_CHANNELS)
+            return false;
+    }
+
+    return true;
 }
 
 int64_t ca_frames_to_us(struct ao *ao, uint32_t frames)
