@@ -46,66 +46,6 @@
 #include "audio/out/ao_coreaudio_properties.h"
 #include "audio/out/ao_coreaudio_utils.h"
 
-static bool ca_format_is_digital(AudioStreamBasicDescription asbd)
-{
-    switch (asbd.mFormatID)
-    case 'IAC3':
-    case 'iac3':
-    case  kAudioFormat60958AC3:
-    case  kAudioFormatAC3:
-        return true;
-    return false;
-}
-
-static bool ca_stream_supports_digital(struct ao *ao, AudioStreamID stream)
-{
-    AudioStreamRangedDescription *formats = NULL;
-    size_t n_formats;
-
-    OSStatus err =
-        CA_GET_ARY(stream, kAudioStreamPropertyAvailablePhysicalFormats,
-                   &formats, &n_formats);
-
-    CHECK_CA_ERROR("Could not get number of stream formats.");
-
-    for (int i = 0; i < n_formats; i++) {
-        AudioStreamBasicDescription asbd = formats[i].mFormat;
-        ca_print_asbd(ao, "supported format:", &(asbd));
-        if (ca_format_is_digital(asbd)) {
-            talloc_free(formats);
-            return true;
-        }
-    }
-
-    talloc_free(formats);
-coreaudio_error:
-    return false;
-}
-
-static bool ca_device_supports_digital(struct ao *ao, AudioDeviceID device)
-{
-    AudioStreamID *streams = NULL;
-    size_t n_streams;
-
-    /* Retrieve all the output streams. */
-    OSStatus err =
-        CA_GET_ARY_O(device, kAudioDevicePropertyStreams, &streams, &n_streams);
-
-    CHECK_CA_ERROR("could not get number of streams.");
-
-    for (int i = 0; i < n_streams; i++) {
-        if (ca_stream_supports_digital(ao, streams[i])) {
-            talloc_free(streams);
-            return true;
-        }
-    }
-
-    talloc_free(streams);
-
-coreaudio_error:
-    return false;
-}
-
 static OSStatus ca_property_listener(
     AudioObjectPropertySelector selector,
     AudioObjectID object, uint32_t n_addresses,
@@ -265,6 +205,11 @@ static bool ca_change_format(struct ao *ao, AudioStreamID stream,
         return false;
     }
 
+    err = CA_SET(stream, kAudioStreamPropertyVirtualFormat, &change_format);
+    if (!CHECK_CA_WARN("error changing virtual format")) {
+        return false;
+    }
+
     /* The AudioStreamSetProperty is not only asynchronious,
      * it is also not Atomic, in its behaviour.
      * Therefore we check 5 times before we really give up. */
@@ -358,7 +303,7 @@ static OSStatus render_cb_digital(
     // Check whether we need to reset the digital output stream.
     if (p->stream_asbd_changed) {
         AudioStreamBasicDescription f;
-        OSErr err = CA_GET(p->stream, kAudioStreamPropertyPhysicalFormat, &f);
+        OSErr err = CA_GET(p->stream, kAudioStreamPropertyVirtualFormat, &f);
         CHECK_CA_WARN("could not get stream format");
         if (err == noErr && ca_asbd_equals(&p->stream_asbd, &f))
             p->stream_asbd_changed = 0;
@@ -384,18 +329,9 @@ static int init(struct ao *ao)
 
     ao->format = af_fmt_from_planar(ao->format);
 
-    bool supports_digital = false;
-    /* Probe whether device support S/PDIF stream output if input is AC3 stream,
-     * or anything else IEC61937-framed. */
-    if (AF_FORMAT_IS_IEC61937(ao->format)) {
-        if (ca_device_supports_digital(ao, p->device))
-            supports_digital = true;
-    }
-
-    if (!supports_digital) {
-        MP_ERR(ao, "selected device doesn't support digital formats\n");
-        goto coreaudio_error;
-    } // closes if (!supports_digital)
+    // Stereo only for now
+    if (!AF_FORMAT_IS_IEC61937(ao->format))
+        ao->channels = (struct mp_chmap) MP_CHMAP_INIT_STEREO;
 
     // Build ASBD for the input format
     AudioStreamBasicDescription asbd;
@@ -434,46 +370,40 @@ static int init_digital(struct ao *ao, AudioStreamBasicDescription asbd)
 
     CHECK_CA_ERROR("could not get number of streams");
 
-    for (int i = 0; i < n_streams && p->stream_idx < 0; i++) {
-        bool digital = ca_stream_supports_digital(ao, streams[i]);
+    AudioStreamBasicDescription best_asbd = {0};
 
-        if (digital) {
-            AudioStreamRangedDescription *formats;
-            size_t n_formats;
+    ca_print_asbd(ao, "requested format:", &asbd);
 
-            err = CA_GET_ARY(streams[i],
-                             kAudioStreamPropertyAvailablePhysicalFormats,
-                             &formats, &n_formats);
+    for (int i = 0; i < n_streams; i++) {
+        MP_VERBOSE(ao, "Listing supported formats for sub-stream %d:\n", i);
 
-            if (!CHECK_CA_WARN("could not get number of stream formats"))
-                continue; // try next one
+        AudioStreamRangedDescription *formats;
+        size_t n_formats;
 
-            int req_rate_format = -1;
-            int max_rate_format = -1;
+        err = CA_GET_ARY(streams[i],
+                         kAudioStreamPropertyAvailablePhysicalFormats,
+                         &formats, &n_formats);
 
-            p->stream = streams[i];
+        if (!CHECK_CA_WARN("could not get number of stream formats"))
+            continue; // try next one
+
+        for (int j = 0; j < n_formats; j++) {
+            AudioStreamBasicDescription *stream_asbd = &formats[j].mFormat;
+
+            ca_print_asbd(ao, " -", stream_asbd);
+
+            if (!best_asbd.mFormatID || ca_asbd_is_better(&asbd, &best_asbd,
+                                                          stream_asbd))
+                best_asbd = *stream_asbd;
+        }
+
+        talloc_free(formats);
+
+        if (best_asbd.mFormatID) {
             p->stream_idx = i;
-
-            for (int j = 0; j < n_formats; j++)
-                if (ca_format_is_digital(formats[j].mFormat)) {
-                    // select the digital format that has exactly the same
-                    // samplerate. If an exact match cannot be found, select
-                    // the format with highest samplerate as backup.
-                    if (formats[j].mFormat.mSampleRate == asbd.mSampleRate) {
-                        req_rate_format = j;
-                        break;
-                    } else if (max_rate_format < 0 ||
-                        formats[j].mFormat.mSampleRate >
-                        formats[max_rate_format].mFormat.mSampleRate)
-                        max_rate_format = j;
-                }
-
-            if (req_rate_format >= 0)
-                p->stream_asbd = formats[req_rate_format].mFormat;
-            else
-                p->stream_asbd = formats[max_rate_format].mFormat;
-
-            talloc_free(formats);
+            p->stream = streams[i];
+            p->stream_asbd = best_asbd;
+            break;
         }
     }
 
@@ -489,19 +419,32 @@ static int init_digital(struct ao *ao, AudioStreamBasicDescription asbd)
     CHECK_CA_ERROR("could not get stream's original physical format");
 
     if (!ca_change_format(ao, p->stream, p->stream_asbd))
-        goto coreaudio_error;
+        MP_WARN(ao, "can't change format\n");
+
+    AudioStreamBasicDescription phys;
+    err = CA_GET(p->stream, kAudioStreamPropertyVirtualFormat, &phys);
+    CHECK_CA_ERROR("can't retrieve physical format");
+    ca_print_asbd(ao, "final physical format:", &phys);
+
+    err = CA_GET(p->stream, kAudioStreamPropertyVirtualFormat, &p->stream_asbd);
+    CHECK_CA_ERROR("can't retrieve virtual format");
+    ca_print_asbd(ao, "final virtual format:", &p->stream_asbd);
 
     void *changed = (void *) &(p->stream_asbd_changed);
     err = ca_enable_device_listener(p->device, changed);
     CHECK_CA_ERROR("cannot install format change listener during init");
 
-    if (p->stream_asbd.mFormatFlags & kAudioFormatFlagIsBigEndian)
-        MP_WARN(ao, "stream has non-native byte order, output may fail\n");
-
+    ao->format = ca_asbd_to_mp_format(&p->stream_asbd);
     ao->samplerate = p->stream_asbd.mSampleRate;
+    mp_chmap_from_channels(&ao->channels, p->stream_asbd.mChannelsPerFrame);
     ao->bps = ao->samplerate *
                   (p->stream_asbd.mBytesPerPacket /
                    p->stream_asbd.mFramesPerPacket);
+
+    if (!ao->format || !ao->samplerate || !ao->channels.num) {
+        MP_FATAL(ao, "No format could be selected.\n");
+        goto coreaudio_error;
+    }
 
     uint32_t latency_frames = 0;
     uint32_t latency_properties[] = {
