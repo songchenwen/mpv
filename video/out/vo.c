@@ -658,6 +658,7 @@ static bool render_frame(struct vo *vo)
         mp_input_wakeup(vo->input_ctx); // core can queue new video now
 
         MP_STATS(vo, "start video");
+        fprintf(stderr, "video begin\n");
 
         if (in->vsync_timed) {
             struct frame_timing t = (struct frame_timing) {
@@ -695,6 +696,8 @@ static bool render_frame(struct vo *vo)
         in->vsync_interval_approx = in->last_flip - prev_flip;
 
         MP_STATS(vo, "end video");
+
+        fprintf(stderr, "video done\n");
 
         pthread_mutex_lock(&in->lock);
         in->dropped_frame = drop;

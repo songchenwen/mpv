@@ -80,6 +80,8 @@ struct vo_cocoa_state {
     IONotificationPortRef light_sensor_io_port;
 
     pthread_mutex_t mutex;
+    pthread_cond_t wakeup;
+    bool wait_redraw, rendered, resized;
     struct mp_log *log;
 
     uint32_t old_dwidth;
@@ -249,6 +251,7 @@ int vo_cocoa_init(struct vo *vo)
         .embedded = vo->opts->WinID >= 0,
     };
     mpthread_mutex_init_recursive(&s->mutex);
+    pthread_cond_init(&s->wakeup, NULL);
     vo->cocoa = s;
     cocoa_init_light_sensor(vo);
     return 1;
@@ -389,6 +392,7 @@ static void resize_window(struct vo *vo)
     vo->dwidth  = frame.size.width;
     vo->dheight = frame.size.height;
     [s->gl_ctx update];
+    s->resized = true;
 }
 
 static void vo_set_level(struct vo *vo, int ontop)
@@ -614,6 +618,25 @@ static void vo_cocoa_resize_redraw(struct vo *vo, int width, int height)
     if (!s->gl_ctx)
         return;
 
+    cocoa_lock(s);
+    fprintf(stderr, "cocoa req\n");
+    s->rendered = false;
+    s->resized = false;
+    s->wait_redraw = true;
+
+    vo->want_redraw = true;
+    vo_wakeup(vo);
+
+    while (s->wait_redraw) {
+        if (mpthread_cond_timedwait_rel(&s->wakeup, &s->mutex, 0.1) == ETIMEDOUT) {
+            fprintf(stderr, "timeout---------!\n");
+            break;
+        }
+    }
+    fprintf(stderr, "cocoa done\n");
+    cocoa_unlock(s);
+    return;
+
     if (!s->resize_redraw)
         return;
 
@@ -653,6 +676,17 @@ void vo_cocoa_swap_buffers(struct vo *vo)
         s->pending_events |= VO_EVENT_EXPOSE;
     } else {
         [s->gl_ctx flushBuffer];
+        cocoa_lock(s);
+        fprintf(stderr, "flip done\n");
+        if (s->wait_redraw) {
+            if (s->resized) {
+                s->wait_redraw = false;
+                pthread_cond_signal(&s->wakeup);
+            } else {
+                vo_wakeup(vo); // make sure check_events is called?
+            }
+        }
+        cocoa_unlock(s);
     }
 
     if (s->waiting_frame) {
@@ -667,7 +701,7 @@ int vo_cocoa_check_events(struct vo *vo)
     int events = s->pending_events;
     s->pending_events = 0;
 
-    if (events & VO_EVENT_RESIZE) {
+    if (s->wait_redraw || (events & VO_EVENT_RESIZE)) {
         resize_window(vo);
     }
 
